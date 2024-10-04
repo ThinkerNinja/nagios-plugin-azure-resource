@@ -1,14 +1,17 @@
+Modified version - converted code from Python2 to Python3.
+
 # nagios-plugin-azure-resource
 
 Nagios plugin to monitor Microsoft Azure resource objects.
 
-## Authors
+## Original Authors
 
 Mohamed El Morabity <melmorabity -(at)- fedoraproject.org>
 
+
 ## Requirements
 
-The plugin is written in Python 2. It requires the following libraries:
+The plugin is written in **Python 3**. It requires the following libraries:
 
 * [pynag](https://pypi.python.org/pypi/pynag)
 * [msrestazure](https://pypi.python.org/pypi/msrestazure) >= 0.4.15
