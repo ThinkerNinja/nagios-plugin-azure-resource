@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # Copyright (C) 2018 Mohamed El Morabity <melmorabity@fedoraproject.com>
@@ -15,6 +15,8 @@
 # see <http://www.gnu.org/licenses/>.
 
 
+from typing import Dict, Optional, Union
+
 from msrest.exceptions import ClientException
 from msrest.service_client import ServiceClient
 
@@ -29,8 +31,16 @@ from pynag.Plugins import simple as Plugin
 from requests.exceptions import HTTPError
 
 
-def _call_arm_rest_api(client, path, api_version, method='GET', body=None, query=None,
-                       headers=None, timeout=None):
+def _call_arm_rest_api(
+    client: ServiceClient,
+    path: str,
+    api_version: str,
+    method: str = 'GET',
+    body: Optional[Dict] = None,
+    query: Optional[Dict] = None,
+    headers: Optional[Dict] = None,
+    timeout: Optional[float] = None
+) -> Union[Dict, str]:
     """Launch an Azure REST API request."""
 
     request = getattr(client, method.lower())(
@@ -65,8 +75,10 @@ class NagiosAzureResourceMonitor(Plugin):
     _AZURE_METRICS_UNIT_SYMBOLS = {'Percent': '%', 'Bytes': 'B', 'Seconds': 's'}
 
     def __init__(self, *args, **kwargs):
-        Plugin.__init__(self, *args, **kwargs)
-
+        super().__init__(*args, **kwargs)
+        self._client = None
+        self._metric_definitions = None
+        self._metric_properties = None
         self._set_cli_options()
 
     def _set_cli_options(self):
@@ -83,7 +95,7 @@ class NagiosAzureResourceMonitor(Plugin):
 
     def activate(self):
         """Parse out all command line options and get ready to process the plugin."""
-        Plugin.activate(self)
+        super().activate()
 
         if not msrestazure.tools.is_valid_resource_id(self['resource']):
             self.parser.error('invalid resource ID')
@@ -101,15 +113,17 @@ class NagiosAzureResourceMonitor(Plugin):
                 self['timeout'] = float(self['timeout'])
                 if self['timeout'] < 0:
                     raise ValueError
-            except ValueError as ex:
+            except ValueError:
                 self.parser.error('Invalid timeout')
 
         # Authenticate to ARM
-        azure_management_url = 'https://{}'.format(self['host'])
+        azure_management_url = f'https://{self["host"]}'
         try:
-            credentials = ServicePrincipalCredentials(client_id=self['client'],
-                                                      secret=self['secret'],
-                                                      tenant=self['tenant'])
+            credentials = ServicePrincipalCredentials(
+                client_id=self['client'],
+                secret=self['secret'],
+                tenant=self['tenant']
+            )
             self._client = ServiceClient(credentials, AzureConfiguration(azure_management_url))
         except ClientException as ex:
             self.nagios_exit(Plugins.UNKNOWN, str(ex.inner_exception or ex))
@@ -122,30 +136,33 @@ class NagiosAzureResourceMonitor(Plugin):
         metric_ids = [m['name']['value'] for m in self._metric_definitions]
         if self['metric'] not in metric_ids:
             self.parser.error(
-                'Unknown metric {} for specified resource. ' \
-                'Supported metrics are: {}'.format(self['metric'], ', '.join(metric_ids))
+                f'Unknown metric {self["metric"]} for specified resource. '
+                f'Supported metrics are: {", ".join(metric_ids)}'
             )
         self._metric_properties = self._get_metric_properties()
 
         dimension_ids = [d['value'] for d in self._metric_properties.get('dimensions', [])]
         if self._is_dimension_required() and self['dimension'] is None:
             self.parser.error(
-                'Dimension required for metric {}. ' \
-                'Supported dimensions are: {}'.format(self['metric'], ', '.join(dimension_ids))
+                f'Dimension required for metric {self["metric"]}. '
+                f'Supported dimensions are: {", ".join(dimension_ids)}'
             )
         if self['dimension'] is not None and self['dimension'] not in dimension_ids:
             self.parser.error(
-                'Unknown dimension {} for metric {}. ' \
-                'Supported dimensions are: {}'.format(self['dimension'], self['metric'],
-                                                      ', '.join(dimension_ids))
+                f'Unknown dimension {self["dimension"]} for metric {self["metric"]}. '
+                f'Supported dimensions are: {", ".join(dimension_ids)}'
             )
 
     def _get_metric_definitions(self):
         """Get all available metric definitions for the Azure resource object."""
 
-        path = '{}/providers/Microsoft.Insights/metricDefinitions'.format(self['resource'])
-        metrics = _call_arm_rest_api(self._client, path, self._AZURE_METRICS_API,
-                                     timeout=self['timeout'])
+        path = f'{self["resource"]}/providers/Microsoft.Insights/metricDefinitions'
+        metrics = _call_arm_rest_api(
+            self._client,
+            path,
+            self._AZURE_METRICS_API,
+            timeout=self['timeout']
+        )
 
         return metrics['value']
 
@@ -168,15 +185,18 @@ class NagiosAzureResourceMonitor(Plugin):
 
         query = {'metric': self['metric']}
         if self['dimension'] is not None:
-            query['$filter'] = "{} eq '{}'".format(self['dimension'], self['dimension-value'])
+            query['$filter'] = f"{self['dimension']} eq '{self['dimension-value']}'"
 
-        path = '{}/providers/Microsoft.Insights/metrics/{}'.format(self['resource'],
-                                                                   self['metric'])
+        path = f'{self["resource"]}/providers/Microsoft.Insights/metrics/{self["metric"]}'
 
         try:
-            metric_values = _call_arm_rest_api(self._client, path,
-                                               self._AZURE_METRICS_API, query=query,
-                                               timeout=self['timeout'])
+            metric_values = _call_arm_rest_api(
+                self._client,
+                path,
+                self._AZURE_METRICS_API,
+                query=query,
+                timeout=self['timeout']
+            )
             metric_values = metric_values['value'][0]['timeseries']
         except CloudError as ex:
             self.nagios_exit(Plugins.UNKNOWN, ex.message)
@@ -186,7 +206,7 @@ class NagiosAzureResourceMonitor(Plugin):
 
         aggregation_type = self._metric_properties['primaryAggregationType'].lower()
         # Get the latest value available
-        for value in metric_values[0]['data'][::-1]:
+        for value in reversed(metric_values[0]['data']):
             if aggregation_type in value:
                 return value[aggregation_type]
 
@@ -197,21 +217,27 @@ class NagiosAzureResourceMonitor(Plugin):
 
         value = self._get_metric_value()
         if value is None:
-            message = 'No value available for metric {}'.format(self['metric'])
+            message = f'No value available for metric {self["metric"]}'
             if self['dimension'] is not None:
-                message += ' and dimension {}'.format(self['dimension'])
+                message += f' and dimension {self["dimension"]}'
             self.nagios_exit(Plugins.UNKNOWN, message)
 
         status = Plugins.check_threshold(value, warning=self['warning'], critical=self['critical'])
 
         unit = self._AZURE_METRICS_UNIT_SYMBOLS.get(self._metric_properties['unit'])
-        self.add_perfdata(self._metric_properties['name']['value'], value, uom=unit,
-                          warn=self['warning'], crit=self['critical'])
+        self.add_perfdata(
+            self._metric_properties['name']['value'],
+            value,
+            uom=unit,
+            warn=self['warning'],
+            crit=self['critical']
+        )
 
-        self.nagios_exit(status,
-                         '{} {} {}'.format(self._metric_properties['name']['localizedValue'],
-                                           value,
-                                           self._metric_properties['unit'].lower()))
+        self.nagios_exit(
+            status,
+            f'{self._metric_properties["name"]["localizedValue"]} {value} '
+            f'{self._metric_properties["unit"].lower()}'
+        )
 
 
 if __name__ == '__main__':
